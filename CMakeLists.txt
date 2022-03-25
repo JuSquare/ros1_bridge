@@ -90,9 +90,6 @@ list(APPEND generated_files "${generated_path}/get_mappings.cpp")
 
 # generate per interface compilation units to keep the memory usage low
 ament_index_get_resources(ros2_interface_packages "rosidl_interfaces")
-# actionlib_msgs is deprecated, but we will quiet the warning until the bridge has support for
-# ROS actions: https://github.com/ros2/design/issues/195
-set(actionlib_msgs_DEPRECATED_QUIET TRUE)
 foreach(package_name ${ros2_interface_packages})
   find_package(${package_name} QUIET REQUIRED)
   message(STATUS "Found ${package_name}: ${${package_name}_VERSION} (${${package_name}_DIR})")
@@ -122,12 +119,9 @@ set(target_dependencies
   "resource/pkg_factories.hpp.em"
   "ros1_bridge/__init__.py")
 
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
-
 add_custom_command(
   OUTPUT ${generated_files}
-  COMMAND Python3::Interpreter
-  ARGS bin/ros1_bridge_generate_factories
+  COMMAND ${PYTHON_EXECUTABLE} bin/ros1_bridge_generate_factories
     --output-path "${generated_path}" --template-dir resource
   DEPENDS ${target_dependencies}
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -169,8 +163,10 @@ custom_executable(simple_bridge_1_to_2 "src/simple_bridge_1_to_2.cpp"
 custom_executable(simple_bridge_2_to_1 "src/simple_bridge_2_to_1.cpp"
   ROS1_DEPENDENCIES
   TARGET_DEPENDENCIES "std_msgs")
-
 custom_executable(simple_bridge "src/simple_bridge.cpp"
+  ROS1_DEPENDENCIES
+  TARGET_DEPENDENCIES "std_msgs")
+custom_executable(loihi_bridge "src/loihi_bridge.cpp"
   ROS1_DEPENDENCIES
   TARGET_DEPENDENCIES "std_msgs")
 

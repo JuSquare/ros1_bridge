@@ -17,7 +17,6 @@
 #include <memory>
 #include <set>
 #include <string>
-#include <utility>
 #include <vector>
 
 // include ROS 1
@@ -36,7 +35,9 @@
 
 // include ROS 2
 #include "rclcpp/rclcpp.hpp"
-#include "rcpputils/scope_exit.hpp"
+#include "rclcpp/scope_exit.hpp"
+
+#include "rcutils/get_env.h"
 
 #include "ros1_bridge/bridge.hpp"
 
@@ -181,16 +182,11 @@ void update_bridge(
     bridge.ros1_type_name = ros1_type_name;
     bridge.ros2_type_name = ros2_type_name;
 
-    auto ros2_publisher_qos = rclcpp::QoS(rclcpp::KeepLast(10));
-    if (topic_name == "/tf_static") {
-      ros2_publisher_qos.keep_all();
-      ros2_publisher_qos.transient_local();
-    }
     try {
       bridge.bridge_handles = ros1_bridge::create_bridge_from_1_to_2(
         ros1_node, ros2_node,
         bridge.ros1_type_name, topic_name, 10,
-        bridge.ros2_type_name, topic_name, ros2_publisher_qos);
+        bridge.ros2_type_name, topic_name, 10);
     } catch (std::runtime_error & e) {
       fprintf(
         stderr,
@@ -327,10 +323,6 @@ void update_bridge(
     }
   }
 
-  int service_execution_timeout{5};
-  ros1_node.getParamCached(
-    "ros1_bridge/dynamic_bridge/service_execution_timeout", service_execution_timeout);
-
   // create bridges for ros2 services
   for (auto & service : ros2_services) {
     auto & name = service.first;
@@ -343,8 +335,7 @@ void update_bridge(
         "ros2", details.at("package"), details.at("name"));
       if (factory) {
         try {
-          service_bridges_1_to_2[name] = factory->service_bridge_1_to_2(
-            ros1_node, ros2_node, name, service_execution_timeout);
+          service_bridges_1_to_2[name] = factory->service_bridge_1_to_2(ros1_node, ros2_node, name);
           printf("Created 1 to 2 bridge for service %s\n", name.data());
         } catch (std::runtime_error & e) {
           fprintf(stderr, "Failed to created a bridge: %s\n", e.what());
@@ -401,12 +392,11 @@ void get_ros1_service_info(
     return;
   }
   ros::TransportTCPPtr transport(new ros::TransportTCP(nullptr, ros::TransportTCP::SYNCHRONOUS));
-  auto transport_exit = rcpputils::make_scope_exit(
-    [transport]() {
-      transport->close();
-    });
+  auto transport_exit = rclcpp::make_scope_exit([transport]() {
+        transport->close();
+      });
   if (!transport->connect(host, port)) {
-    fprintf(stderr, "Failed to connect to %s (%s:%d)\n", name.data(), host.data(), port);
+    fprintf(stderr, "Failed to connect to %s:%d\n", host.data(), port);
     return;
   }
   ros::M_string header_out;
@@ -469,7 +459,22 @@ int main(int argc, char * argv[])
   }
 
   // ROS 2 node
-  rclcpp::init(argc, argv);
+
+  // TODO(hidmic): remove when Fast-RTPS supports registering multiple
+  //               typesupports for the same topic in the same process.
+  //               See https://github.com/ros2/rmw_fastrtps/issues/265.
+  std::vector<char *> args(argv, argv + argc);
+  char log_disable_rosout[] = "__log_disable_rosout:=true";
+
+  const char * rmw_implementation = "";
+  const char * error = rcutils_get_env("RMW_IMPLEMENTATION", &rmw_implementation);
+  if (NULL != error) {
+    throw std::runtime_error(error);
+  }
+  if (0 == strcmp(rmw_implementation, "") || NULL != strstr(rmw_implementation, "fastrtps")) {
+    args.push_back(log_disable_rosout);
+  }
+  rclcpp::init(args.size(), args.data());
 
   auto ros2_node = rclcpp::Node::make_shared("ros_bridge");
 
@@ -583,8 +588,7 @@ int main(int argc, char * argv[])
           current_ros1_subscribers[topic_name] = topic.datatype;
         }
         if (output_topic_introspection) {
-          printf(
-            "  ROS 1: %s (%s) [%s pubs, %s subs]\n",
+          printf("  ROS 1: %s (%s) [%s pubs, %s subs]\n",
             topic_name.c_str(), topic.datatype.c_str(),
             has_publisher ? ">0" : "0", has_subscriber ? ">0" : "0");
         }
@@ -698,24 +702,8 @@ int main(int argc, char * argv[])
         }
 
         if (output_topic_introspection) {
-          printf(
-            "  ROS 2: %s (%s) [%zu pubs, %zu subs]\n",
+          printf("  ROS 2: %s (%s) [%zu pubs, %zu subs]\n",
             topic_name.c_str(), topic_type.c_str(), publisher_count, subscriber_count);
-        }
-      }
-
-      // collect available services (not clients)
-      std::set<std::string> service_names;
-      std::vector<std::pair<std::string, std::string>> node_names_and_namespaces =
-        ros2_node->get_node_graph_interface()->get_node_names_and_namespaces();
-      for (auto & pair : node_names_and_namespaces) {
-        if (pair.first == ros2_node->get_name() && pair.second == ros2_node->get_namespace()) {
-          continue;
-        }
-        std::map<std::string, std::vector<std::string>> services_and_types =
-          ros2_node->get_service_names_and_types_by_node(pair.first, pair.second);
-        for (auto & it : services_and_types) {
-          service_names.insert(it.first);
         }
       }
 
@@ -749,14 +737,12 @@ int main(int argc, char * argv[])
           fprintf(stderr, "invalid service type '%s', skipping...\n", service_type.c_str());
           continue;
         }
+        auto service_type_package_name = service_type.substr(0, separator_position);
+        auto service_type_srv_name = service_type.substr(separator_position + 1);
 
-        // only bridge if there is a service, not for a client
-        if (service_names.find(service_name) != service_names.end()) {
-          auto service_type_package_name = service_type.substr(0, separator_position);
-          auto service_type_srv_name = service_type.substr(separator_position + 1);
-          active_ros2_services[service_name]["package"] = service_type_package_name;
-          active_ros2_services[service_name]["name"] = service_type_srv_name;
-        }
+        // TODO(wjwwood): fix bug where just a ros2 client will cause a ros1 service to be made
+        active_ros2_services[service_name]["package"] = service_type_package_name;
+        active_ros2_services[service_name]["name"] = service_type_srv_name;
       }
 
       {

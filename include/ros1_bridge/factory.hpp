@@ -70,15 +70,6 @@ public:
   {
     auto qos = rclcpp::QoS(rclcpp::KeepAll());
     qos.get_rmw_qos_profile() = qos_profile;
-    return create_ros2_publisher(node, topic_name, qos);
-  }
-
-  rclcpp::PublisherBase::SharedPtr
-  create_ros2_publisher(
-    rclcpp::Node::SharedPtr node,
-    const std::string & topic_name,
-    const rclcpp::QoS & qos)
-  {
     return node->create_publisher<ROS2_T>(topic_name, qos);
   }
 
@@ -112,8 +103,9 @@ public:
     ros::Publisher ros1_pub,
     rclcpp::PublisherBase::SharedPtr ros2_pub = nullptr)
   {
-    auto qos = rclcpp::SensorDataQoS(rclcpp::KeepLast(queue_size));
-    return create_ros2_subscriber(node, topic_name, qos, ros1_pub, ros2_pub);
+    rmw_qos_profile_t custom_qos_profile = rmw_qos_profile_sensor_data;
+    custom_qos_profile.depth = queue_size;
+    return create_ros2_subscriber(node, topic_name, custom_qos_profile, ros1_pub, ros2_pub);
   }
 
   rclcpp::SubscriptionBase::SharedPtr
@@ -124,29 +116,17 @@ public:
     ros::Publisher ros1_pub,
     rclcpp::PublisherBase::SharedPtr ros2_pub = nullptr)
   {
-    auto rclcpp_qos = rclcpp::QoS(rclcpp::QoSInitialization::from_rmw(qos));
-    rclcpp_qos.get_rmw_qos_profile() = qos;
-    return create_ros2_subscriber(
-      node, topic_name, rclcpp_qos, ros1_pub, ros2_pub);
-  }
-
-  rclcpp::SubscriptionBase::SharedPtr
-  create_ros2_subscriber(
-    rclcpp::Node::SharedPtr node,
-    const std::string & topic_name,
-    const rclcpp::QoS & qos,
-    ros::Publisher ros1_pub,
-    rclcpp::PublisherBase::SharedPtr ros2_pub = nullptr)
-  {
     std::function<
-      void(const typename ROS2_T::SharedPtr msg, const rclcpp::MessageInfo & msg_info)> callback;
+      void(const typename ROS2_T::SharedPtr msg, const rmw_message_info_t & msg_info)> callback;
     callback = std::bind(
       &Factory<ROS1_T, ROS2_T>::ros2_callback, std::placeholders::_1, std::placeholders::_2,
       ros1_pub, ros1_type_name_, ros2_type_name_, node->get_logger(), ros2_pub);
+    auto rclcpp_qos = rclcpp::QoS(rclcpp::QoSInitialization::from_rmw(qos));
+    rclcpp_qos.get_rmw_qos_profile() = qos;
     rclcpp::SubscriptionOptions options;
     options.ignore_local_publications = true;
     return node->create_subscription<ROS2_T>(
-      topic_name, qos, callback, options);
+      topic_name, rclcpp_qos, callback, options);
   }
 
   void convert_1_to_2(const void * ros1_msg, void * ros2_msg) override
@@ -210,7 +190,7 @@ protected:
   static
   void ros2_callback(
     typename ROS2_T::SharedPtr ros2_msg,
-    const rclcpp::MessageInfo & msg_info,
+    const rmw_message_info_t & msg_info,
     ros::Publisher ros1_pub,
     const std::string & ros1_type_name,
     const std::string & ros2_type_name,
@@ -219,10 +199,7 @@ protected:
   {
     if (ros2_pub) {
       bool result = false;
-      auto ret = rmw_compare_gids_equal(
-        &msg_info.get_rmw_message_info().publisher_gid,
-        &ros2_pub->get_gid(),
-        &result);
+      auto ret = rmw_compare_gids_equal(&msg_info.publisher_gid, &ros2_pub->get_gid(), &result);
       if (ret == RMW_RET_OK) {
         if (result) {  // message GID equals to bridge's ROS2 publisher GID
           return;  // do not publish messages from bridge itself
@@ -232,16 +209,6 @@ protected:
         rmw_reset_error();
         throw std::runtime_error(msg);
       }
-    }
-
-    void * ptr = ros1_pub;
-    if (ptr == 0) {
-      RCLCPP_WARN_ONCE(
-        logger,
-        "Message from ROS 2 %s failed to be passed to ROS 1 %s because the "
-        "ROS 1 publisher is invalid (showing msg only once per type)",
-        ros2_type_name.c_str(), ros1_type_name.c_str());
-      return;
     }
 
     ROS1_T ros1_msg;
@@ -294,8 +261,7 @@ public:
 
   bool forward_1_to_2(
     rclcpp::ClientBase::SharedPtr cli, rclcpp::Logger logger,
-    const ROS1Request & request1, ROS1Response & response1,
-    int service_execution_timeout)
+    const ROS1Request & request1, ROS1Response & response1)
   {
     auto client = std::dynamic_pointer_cast<rclcpp::Client<ROS2_T>>(cli);
     if (!client) {
@@ -312,31 +278,28 @@ public:
       }
       RCLCPP_WARN(logger, "Waiting for ROS 2 service %s...", cli->get_service_name());
     }
-    auto timeout = std::chrono::seconds(service_execution_timeout);
+    auto timeout = std::chrono::seconds(5);
     auto future = client->async_send_request(request2);
     auto status = future.wait_for(timeout);
     if (status == std::future_status::ready) {
       auto response2 = future.get();
       translate_2_to_1(*response2, response1);
     } else {
-      RCLCPP_ERROR(
-        logger, "Failed to get response from ROS 2 service %s within %d seconds",
-        cli->get_service_name(), service_execution_timeout);
+      RCLCPP_ERROR(logger, "Failed to get response from ROS 2 service %s", cli->get_service_name());
       return false;
     }
     return true;
   }
 
   ServiceBridge1to2 service_bridge_1_to_2(
-    ros::NodeHandle & ros1_node, rclcpp::Node::SharedPtr ros2_node, const std::string & name,
-    int service_execution_timeout)
+    ros::NodeHandle & ros1_node, rclcpp::Node::SharedPtr ros2_node, const std::string & name)
   {
     ServiceBridge1to2 bridge;
     bridge.client = ros2_node->create_client<ROS2_T>(name);
     auto m = &ServiceFactory<ROS1_T, ROS2_T>::forward_1_to_2;
     auto f = std::bind(
       m, this, bridge.client, ros2_node->get_logger(), std::placeholders::_1,
-      std::placeholders::_2, service_execution_timeout);
+      std::placeholders::_2);
     bridge.server = ros1_node.advertiseService<ROS1Request, ROS1Response>(name, f);
     return bridge;
   }

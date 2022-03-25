@@ -288,7 +288,7 @@ def get_ros2_messages():
                 if all(n not in data for n in ('ros1_service_name', 'ros2_service_name')):
                     try:
                         rules.append(MessageMappingRule(data, package_name))
-                    except Exception as e:  # noqa: B902
+                    except Exception as e:
                         print('%s' % str(e), file=sys.stderr)
     return pkgs, msgs, rules
 
@@ -341,7 +341,7 @@ def get_ros2_services():
                 if all(n not in data for n in ('ros1_message_name', 'ros2_message_name')):
                     try:
                         rules.append(ServiceMappingRule(data, package_name))
-                    except Exception as e:  # noqa: B902
+                    except Exception as e:
                         print('%s' % str(e), file=sys.stderr)
     return pkgs, srvs, rules
 
@@ -567,20 +567,17 @@ def determine_common_services(
     for rule in mapping_rules:
         for ros1_srv in ros1_srvs:
             for ros2_srv in ros2_srvs:
-                pair = (ros1_srv, ros2_srv)
-                if pair in pairs:
-                    continue
                 if rule.ros1_package_name == ros1_srv.package_name and \
                    rule.ros2_package_name == ros2_srv.package_name:
                     if rule.ros1_service_name is None and rule.ros2_service_name is None:
                         if ros1_srv.message_name == ros2_srv.message_name:
-                            pairs.append(pair)
+                            pairs.append((ros1_srv, ros2_srv))
                     else:
                         if (
                             rule.ros1_service_name == ros1_srv.message_name and
                             rule.ros2_service_name == ros2_srv.message_name
                         ):
-                            pairs.append(pair)
+                            pairs.append((ros1_srv, ros2_srv))
 
     for pair in pairs:
         ros1_spec = load_ros1_service(pair[0])
@@ -821,9 +818,9 @@ def load_ros2_message(ros2_msg):
         message_relative_path += '.msg'
     else:
         raise RuntimeError(
-            f"message '{ros2_msg.package_name}/msg/{ros2_msg.message_name}' "
-            f"was not found in prefix '{ros2_msg.prefix_path}' with either "
-            f"file extension '.msg' or '.idl'")
+            "message '%s/msg/%s' was not found in prefix '%s' with either"
+            "file extension '.msg' or '.idl'" %
+            (ros2_msg.package_name, ros2_msg.message_name, ros2_msg.prefix_path))
     # We don't support .msg files, but that shouldn't be a problem since an .idl
     # version should have been created when the package was built by rosidl_adapter.
     if message_path.endswith('.msg'):
@@ -834,7 +831,7 @@ def load_ros2_message(ros2_msg):
         )
     if not message_path.endswith('.idl'):
         raise RuntimeError(
-            f"message_path '{message_path}' unexpectedly does not end with '.idl'"
+            "message_path '%s' unexpectedly does not end with '.idl'" % message_path
         )
     idl_locator = \
         rosidl_parser.definition.IdlLocator(message_basepath, message_relative_path)
@@ -842,8 +839,8 @@ def load_ros2_message(ros2_msg):
     messages = spec.content.get_elements_of_type(rosidl_parser.definition.Message)
     if len(messages) != 1:
         raise RuntimeError(
-            'unexpectedly found multiple message definitions when processing '
-            f"message '{ros2_msg.package_name}/msg/{ros2_msg.message_name}'"
+            "unexpectedly found multiple message definitions when processing " +
+            "message '%s/msg/%s'" % (ros2_msg.package_name, ros2_msg.message_name)
         )
     return messages[0]
 

@@ -68,13 +68,6 @@ public:
     const rmw_qos_profile_t & qos_profile) = 0;
 
   virtual
-  rclcpp::PublisherBase::SharedPtr
-  create_ros2_publisher(
-    rclcpp::Node::SharedPtr node,
-    const std::string & topic_name,
-    const rclcpp::QoS & qos) = 0;
-
-  virtual
   ros::Subscriber
   create_ros1_subscriber(
     ros::NodeHandle node,
@@ -102,15 +95,6 @@ public:
     rclcpp::PublisherBase::SharedPtr ros2_pub = nullptr) = 0;
 
   virtual
-  rclcpp::SubscriptionBase::SharedPtr
-  create_ros2_subscriber(
-    rclcpp::Node::SharedPtr node,
-    const std::string & topic_name,
-    const rclcpp::QoS & qos,
-    ros::Publisher ros1_pub,
-    rclcpp::PublisherBase::SharedPtr ros2_pub = nullptr) = 0;
-
-  virtual
   void
   convert_1_to_2(const void * ros1_msg, void * ros2_msg) = 0;
 
@@ -123,7 +107,7 @@ class ServiceFactoryInterface
 {
 public:
   virtual ServiceBridge1to2 service_bridge_1_to_2(
-    ros::NodeHandle &, rclcpp::Node::SharedPtr, const std::string &, int) = 0;
+    ros::NodeHandle &, rclcpp::Node::SharedPtr, const std::string &) = 0;
 
   virtual ServiceBridge2to1 service_bridge_2_to_1(
     ros::NodeHandle &, rclcpp::Node::SharedPtr, const std::string &) = 0;
